@@ -1,3 +1,5 @@
+### Disclaimer: This is not an officially supported Google product.
+
 # Featurising Pixels from Dynamic 3D Scenes with Linear In-Context Learners
 **Nikita Araslanov**, **Martin Sundermeyer**, **Hidenobu Matsuki**, **David Joseph Tan**, **Federico Tombari**
 
