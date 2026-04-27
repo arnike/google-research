@@ -1,18 +1,3 @@
-# coding=utf-8
-# Copyright 2026 The Google Research Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
@@ -25,8 +10,9 @@
 
 import logging
 
-from torch import nn
 from torch import Tensor
+from torch import nn
+
 import torch.nn.functional as F
 
 
@@ -34,86 +20,81 @@ logger = logging.getLogger("dinov2")
 
 
 try:
-  from xformers.ops import memory_efficient_attention, unbind, fmha
+    from xformers.ops import memory_efficient_attention, unbind, fmha
 
-  XFORMERS_AVAILABLE = True
+    XFORMERS_AVAILABLE = True
 except ImportError:
-  logger.warning("xFormers not available")
-  XFORMERS_AVAILABLE = False
+    logger.warning("xFormers not available")
+    XFORMERS_AVAILABLE = False
 
 
 class Attention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        proj_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim**-0.5
 
-  def __init__(
-      self,
-      dim,
-      num_heads = 8,
-      qkv_bias = False,
-      proj_bias = True,
-      attn_drop = 0.0,
-      proj_drop = 0.0,
-  ):
-    super().__init__()
-    self.num_heads = num_heads
-    head_dim = dim // num_heads
-    self.scale = head_dim**-0.5
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim, bias=proj_bias)
+        self.proj_drop = nn.Dropout(proj_drop)
 
-    self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-    self.attn_drop = nn.Dropout(attn_drop)
-    self.proj = nn.Linear(dim, dim, bias=proj_bias)
-    self.proj_drop = nn.Dropout(proj_drop)
+    def forward(self, x: Tensor) -> Tensor:
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
 
-  def forward(self, x):
-    B, N, C = x.shape
-    qkv = (
-        self.qkv(x)
-        .reshape(B, N, 3, self.num_heads, C // self.num_heads)
-        .permute(2, 0, 3, 1, 4)
-    )
-
-    q, k, v = qkv[0], qkv[1], qkv[2]
-
-    # if self.fused_attn:
-    x = F.scaled_dot_product_attention(
-        q,
-        k,
-        v,
-        dropout_p=self.attn_drop.p if self.training else 0.0,
-        scale=self.scale,
-    )
-    # else:
-    #    attn = (q @ k.transpose(-2, -1)) * self.scale
-    #    attn = attn.softmax(dim=-1)
-    #    attn = self.attn_drop(attn)
-    #    x = attn @ v
-
-    # attn = q @ k.transpose(-2, -1)
-    # attn = attn.softmax(dim=-1)
-    # attn = self.attn_drop(attn)
-    # x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-
-    x = x.transpose(1, 2).reshape(B, N, C)
-
-    x = self.proj(x)
-    x = self.proj_drop(x)
-    return x
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        #if self.fused_attn:
+        x = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.attn_drop.p if self.training else 0.,
+                scale=self.scale,
+        )
+        #else:
+        #    attn = (q @ k.transpose(-2, -1)) * self.scale
+        #    attn = attn.softmax(dim=-1)
+        #    attn = self.attn_drop(attn)
+        #    x = attn @ v
+            
+            
+        #attn = q @ k.transpose(-2, -1)
+        #attn = attn.softmax(dim=-1)
+        #attn = self.attn_drop(attn)
+        #x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        
+        x = x.transpose(1, 2).reshape(B, N, C)
+        
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
 
 
 class MemEffAttention(Attention):
+    def forward(self, x: Tensor, attn_bias=None) -> Tensor:
+        if not XFORMERS_AVAILABLE:
+            assert attn_bias is None, "xFormers is required for nested tensors usage"
+            return super().forward(x)
 
-  def forward(self, x, attn_bias=None):
-    if not XFORMERS_AVAILABLE:
-      assert attn_bias is None, "xFormers is required for nested tensors usage"
-      return super().forward(x)
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
 
-    B, N, C = x.shape
-    qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        q, k, v = unbind(qkv, 2)
 
-    q, k, v = unbind(qkv, 2)
+        x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+        x = x.reshape([B, N, C])
 
-    x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-    x = x.reshape([B, N, C])
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
 
-    x = self.proj(x)
-    x = self.proj_drop(x)
-    return x
+        
