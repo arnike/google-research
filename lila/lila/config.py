@@ -1,3 +1,5 @@
+# coding=utf-8
+
 class LILAConfig:
     
     _configs = {

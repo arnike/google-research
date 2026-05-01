@@ -1,3 +1,4 @@
+# coding=utf-8
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the Apache License, Version 2.0
